@@ -119,13 +119,21 @@ jobs:
           name: 压缩镜像
           command: |
             set -euxo pipefail
-            virt-sparsify --compress alpine-base.qcow2 alpine-custom.qcow2
+            export LIBGUESTFS_BACKEND=direct
+            export LIBGUESTFS_DEBUG=1
+            export LIBGUESTFS_TRACE=1
+
+            if sudo virt-sparsify --compress alpine-base.qcow2 alpine-custom.qcow2; then
+              echo "virt-sparsify 成功"
+            else
+              echo "virt-sparsify 失败，使用 qemu-img convert 兜底"
+              rm -f alpine-custom.qcow2
+              qemu-img convert -O qcow2 -c alpine-base.qcow2 alpine-custom.qcow2
+            fi
+
+            qemu-img info alpine-custom.qcow2
             ls -lh alpine-custom.qcow2
 
-      - persist_to_workspace:
-          root: .
-          paths:
-            - alpine-custom.qcow2
 
   upload-to-release:
     parameters:
