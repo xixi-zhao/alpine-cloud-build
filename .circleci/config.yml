@@ -109,7 +109,7 @@ jobs:
               --run-command 'apk cache clean' \
               --delete '/var/log/*.log' \
               --delete '/var/cache/apk/*' \
-              --truncate '/etc/machine-id'
+              --run-command 'mkdir -p /etc && : > /etc/machine-id'
 
 
             
