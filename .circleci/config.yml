@@ -21,6 +21,110 @@ jobs:
             axel -n 8 -o alpine-base.qcow2 "$DOWNLOAD_URL"
 
       - run:
+          name: 扩展磁盘镜像文件大小 # 新增步骤：扩展 QCOW2 文件本身
+          command: |
+            echo "将 alpine-base.qcow2 磁盘文件扩展到 8GB..."
+            sudo qemu-img resize alpine-base.qcow2 8G
+            echo "扩展完成。"
+
+      - run:
+          name: 验证下载的镜像文件类型
+          command: |
+            echo "--- 'file' 命令输出 ---"
+            file alpine-base.qcow2
+            echo "--- 'qemu-img info' 命令输出 ---"
+            if [ ! -f alpine-base.qcow2 ]; then
+              echo "错误：alpine-base.qcow2 文件不存在！下载可能失败。"
+              exit 1
+            fi
+            if [ ! -s alpine-base.qcow2 ]; then
+              echo "错误：alpine-base.qcow2 文件为空或大小为0！下载可能失败或下载到错误内容。"
+              exit 1
+            fi
+            qemu-img info alpine-base.qcow2 > qemu-img-info.txt 2>&1
+            if grep -q "qcow2" qemu-img-info.txt && grep -q "virtual size" qemu-img-info.txt; then
+              echo "文件类型验证通过：这是一个有效的 QCOW2 镜像。"
+              cat qemu-img-info.txt
+            else
+              echo "错误：qemu-img 无法识别该文件为有效的 QCOW2 镜像或文件已损坏！"
+              echo "请检查下载的文件内容是否为 QCOW2。可能下载到了HTML页面或不完整文件。"
+              cat qemu-img-info.txt
+              exit 1
+            fi
+
+      - run:
+          name: 定制 Alpine 镜像以兼容阿里云
+          command: |
+            export LIBGUESTFS_DEBUG=1 LIBGUESTFS_TRACE=1
+            
+            sudo virt-customize -a alpine-base.qcow2 \
+              --smp 2 \
+              --timezone Asia/Hong_Kong \
+              --resize /dev/sda1:8G \ # 关键：扩展镜像内部的根分区文件系统
+              --install chrony,cloud-utils-growpart \
+              --run-command 'apk update && apk upgrade' \
+              \
+              --run-command 'cat \<<EOF > /etc/chrony/chrony.conf
+            pool ntp.aliyun.com iburst
+            driftfile /var/lib/chrony/drift
+            rtcsync
+            makestep 1.0 3
+            logdir /var/log/chrony
+            EOF' \
+              \
+              --run-command "sed -i 's/#*PermitRootLogin.*/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config" \
+              --run-command "sed -i 's/#*PasswordAuthentication.*/PasswordAuthentication no/g' /etc/ssh/sshd_config" \
+              --append-line '/etc/ssh/sshd_config:UseDNS no' \
+              \
+              --run-command "sed -i 's/\\(APPEND .*\\)/\\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf" \
+              \
+              --run-command 'cat \<<EOF >> /etc/sysctl.d/99-aliyun-optimize.conf
+            vm.swappiness = 0
+            kernel.sysrq = 1
+            net.ipv4.neigh.default.gc_stale_time = 120
+            net.ipv4.conf.all.rp_filter = 0
+            net.ipv4.conf.default.rp_filter = 0
+            net.ipv4.conf.default.arp_announce = 2
+            net.ipv4.conf.lo.arp_announce = 2
+            net.ipv4.conf.all.arp_announce = 2
+            net.ipv4.tcp_max_tw_buckets = 5000
+            net.ipv4.tcp_syncookies = 1
+            net.ipv4.tcp_max_syn_backlog = 1024
+            net.ipv4.tcp_synack_retries = 2
+            net.ipv4.tcp_slow_start_after_idle = 0
+            EOF' \
+              \
+              --run-command 'echo -e "\nWelcome to Alibaba Cloud Elastic Compute Service ! \n" > /etc/motd' \
+              \
+              --run-command 'rc-update add chronyd default' \
+              --run-command 'rc-update add cloud-init default' \
+              \
+              --run-command 'passwd -l root' \
+              --run-command 'apk cache clean' \
+              --delete '/var/log/*.log' \
+              --delete '/var/cache/apk/*' \
+              --truncate '/etc/machine-id'
+
+  build-alpine-cloud:
+    machine:
+      image: ubuntu-2204:current
+    steps:
+      - checkout
+
+      - run:
+          name: 安装构建工具
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y libguestfs-tools axel qemu-utils
+
+      - run:
+          name: 下载 Alpine Cloud Image (硬编码指定版本)
+          command: |
+            DOWNLOAD_URL="https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/generic_alpine-3.23.3-x86_64-uefi-cloudinit-r0.qcow2"
+            echo "正在下载指定的 Alpine Cloud Image: $DOWNLOAD_URL"
+            axel -n 8 -o alpine-base.qcow2 "$DOWNLOAD_URL"
+
+      - run:
           name: 验证下载的镜像文件类型
           command: |
             echo "--- 'file' 命令输出 ---"
