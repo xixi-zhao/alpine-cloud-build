@@ -108,7 +108,7 @@ jobs:
                 'makestep 1.0 3' \
                 'logdir /var/log/chrony' \
                 > /etc/chrony/chrony.conf" \
-              --run-command "sed -i 's/#*PermitRootLogin.*/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config" \
+              --run-command "sed -i 's/#*PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config" \
               --run-command "sed -i 's/#*PasswordAuthentication.*/PasswordAuthentication no/g' /etc/ssh/sshd_config" \
               --append-line '/etc/ssh/sshd_config:UseDNS no' \
               --run-command "if [ -f /boot/extlinux.conf ]; then sed -i 's/\(APPEND .*\)/\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf; else echo 'skip: /boot/extlinux.conf not found'; fi" \
@@ -117,7 +117,6 @@ jobs:
               --run-command 'rc-update add cloud-config default || true' \
               --run-command 'rc-update add cloud-final default || true' \
               --run-command 'rc-update add cloud-init-local default || true' \
-              --run-command 'passwd -l root' \
               --run-command 'apk cache clean' \
               --delete '/var/log/*.log' \
               --delete '/var/cache/apk/*' \
