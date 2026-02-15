@@ -1,18 +1,30 @@
-# CircleCI 配置文件，版本 2.1
 version: 2.1
 
-# 定义 Job
+# 顶层 pipeline 参数（必须在这里，才能用 << pipeline.parameters.xxx >>）
+parameters:
+  alpine_version_major:
+    type: string
+    default: "v3.23"
+  alpine_version_full:
+    type: string
+    default: "3.23.3"
+  alpine_release_rev:
+    type: string
+    default: "r0"
+
 jobs:
   build-alpine-cloud:
-    # 声明此 Job 将接收的参数
     parameters:
-      alpine_version_major: { type: string }
-      alpine_version_full: { type: string }
-      alpine_release_rev: { type: string }
+      alpine_version_major:
+        type: string
+      alpine_version_full:
+        type: string
+      alpine_release_rev:
+        type: string
 
     machine:
       image: ubuntu-2204:current
-      resource_class: large # 建议使用更大的资源类，因为镜像构建可能需要更多内存和CPU
+      resource_class: large
 
     steps:
       - checkout
@@ -20,13 +32,14 @@ jobs:
       - run:
           name: 安装构建工具
           command: |
+            set -euxo pipefail
             sudo apt-get update
             sudo apt-get install -y libguestfs-tools axel qemu-utils
 
       - run:
           name: 下载 Alpine Cloud Image
           command: |
-            # 使用传递进来的参数构建下载 URL
+            set -euxo pipefail
             DOWNLOAD_URL="https://dl-cdn.alpinelinux.org/alpine/<< parameters.alpine_version_major >>/releases/cloud/generic_alpine-<< parameters.alpine_version_full >>-x86_64-uefi-cloudinit-<< parameters.alpine_release_rev >>.qcow2"
             echo "正在下载指定的 Alpine Cloud Image: $DOWNLOAD_URL"
             axel -n 8 -o alpine-base.qcow2 "$DOWNLOAD_URL"
@@ -34,86 +47,75 @@ jobs:
       - run:
           name: 验证下载的镜像文件类型
           command: |
-            echo "--- 'file' 命令输出 ---"
+            set -euxo pipefail
+            echo "--- file 输出 ---"
             file alpine-base.qcow2
-            echo "--- 'qemu-img info' 命令输出 ---"
-            if [ ! -f alpine-base.qcow2 ]; then
-              echo "错误：alpine-base.qcow2 文件不存在！下载可能失败。"
-              exit 1
-            fi
-            if [ ! -s alpine-base.qcow2 ]; then
-              echo "错误：alpine-base.qcow2 文件为空或大小为0！下载可能失败或下载到错误内容。"
-              exit 1
-            fi
-            
+
+            test -f alpine-base.qcow2 || (echo "错误：alpine-base.qcow2 不存在"; exit 1)
+            test -s alpine-base.qcow2 || (echo "错误：alpine-base.qcow2 为空"; exit 1)
+
             qemu-img info alpine-base.qcow2 > qemu-img-info.txt 2>&1
-            if grep -q "qcow2" qemu-img-info.txt && grep -q "virtual size" qemu-img-info.txt; then
-              echo "文件类型验证通过：这是一个有效的 QCOW2 镜像。"
+            if grep -q "file format: qcow2" qemu-img-info.txt && grep -q "virtual size" qemu-img-info.txt; then
+              echo "文件类型验证通过：有效 QCOW2 镜像"
               cat qemu-img-info.txt
             else
-              echo "错误：qemu-img 无法识别该文件为有效的 QCOW2 镜像或文件已损坏！"
-              echo "请检查下载的文件内容是否为 QCOW2。可能下载到了HTML页面或不完整文件。"
+              echo "错误：qemu-img 无法识别为有效 qcow2"
               cat qemu-img-info.txt
               exit 1
             fi
 
       - run:
-          name: 扩展 QCOW2 镜像文件本身大小
+          name: 扩展 QCOW2 镜像文件容器
           command: |
-            echo "将 alpine-base.qcow2 磁盘文件扩展到 8GB (这是QCOW2文件容器大小，不是内部文件系统分区大小)..."
+            set -euxo pipefail
             sudo qemu-img resize alpine-base.qcow2 8G
-            echo "QCOW2 文件容器扩展完成。"
+            qemu-img info alpine-base.qcow2
 
       - run:
           name: 定制 Alpine 镜像以兼容阿里云
           command: |
-            export LIBGUESTFS_DEBUG=1 LIBGUESTFS_TRACE=1
-            
+            set -euxo pipefail
+            export LIBGUESTFS_DEBUG=1
+            export LIBGUESTFS_TRACE=1
+
             sudo virt-customize -a alpine-base.qcow2 \
               --smp 2 \
               --timezone Asia/Hong_Kong \
               --resize /dev/sda1:8G \
               --install chrony,cloud-utils-growpart \
               --run-command 'apk update && apk upgrade --available' \
-              \
-              --run-command 'cat \<<EOF > /etc/chrony/chrony.conf
-            pool ntp.aliyun.com iburst
-            driftfile /var/lib/chrony/drift
-            rtcsync
-            makestep 1.0 3
-            logdir /var/log/chrony
-            EOF' \
-              \
+              --run-command "printf '%s\n' \
+                'pool ntp.aliyun.com iburst' \
+                'driftfile /var/lib/chrony/drift' \
+                'rtcsync' \
+                'makestep 1.0 3' \
+                'logdir /var/log/chrony' \
+                > /etc/chrony/chrony.conf" \
               --run-command "sed -i 's/#*PermitRootLogin.*/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config" \
               --run-command "sed -i 's/#*PasswordAuthentication.*/PasswordAuthentication no/g' /etc/ssh/sshd_config" \
               --append-line '/etc/ssh/sshd_config:UseDNS no' \
-              \
               --run-command "sed -i 's/\\(APPEND .*\\)/\\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf" \
-              \
-              --run-command 'cat \<<EOF >> /etc/sysctl.d/99-aliyun-optimize.conf
-            vm.swappiness = 0
-            kernel.sysrq = 1
-            net.ipv4.neigh.default.gc_stale_time = 120
-            net.ipv4.conf.all.rp_filter = 0
-            net.ipv4.conf.default.rp_filter = 0
-            net.ipv4.conf.default.arp_announce = 2
-            net.ipv4.conf.lo.arp_announce = 2
-            net.ipv4.conf.all.arp_announce = 2
-            net.ipv4.tcp_max_tw_buckets = 5000
-            net.ipv4.tcp_syncookies = 1
-            net.ipv4.tcp_max_syn_backlog = 1024
-            net.ipv4.tcp_synack_retries = 2
-            net.ipv4.tcp_slow_start_after_idle = 0
-            EOF' \
-              \
-              --run-command 'echo -e "\nWelcome to Alibaba Cloud Elastic Compute Service ! \n" > /etc/motd' \
-              \
-              --run-command 'rc-update add chronyd default' \
-              --run-command 'rc-update add cloud-init default' \
-              --run-command 'rc-update add cloud-config default' \
-              --run-command 'rc-update add cloud-final default' \
-              --run-command 'rc-update add cloud-init-local default' \
-              \
+              --run-command "printf '%s\n' \
+                'vm.swappiness = 0' \
+                'kernel.sysrq = 1' \
+                'net.ipv4.neigh.default.gc_stale_time = 120' \
+                'net.ipv4.conf.all.rp_filter = 0' \
+                'net.ipv4.conf.default.rp_filter = 0' \
+                'net.ipv4.conf.default.arp_announce = 2' \
+                'net.ipv4.conf.lo.arp_announce = 2' \
+                'net.ipv4.conf.all.arp_announce = 2' \
+                'net.ipv4.tcp_max_tw_buckets = 5000' \
+                'net.ipv4.tcp_syncookies = 1' \
+                'net.ipv4.tcp_max_syn_backlog = 1024' \
+                'net.ipv4.tcp_synack_retries = 2' \
+                'net.ipv4.tcp_slow_start_after_idle = 0' \
+                > /etc/sysctl.d/99-aliyun-optimize.conf" \
+              --run-command "printf '\nWelcome to Alibaba Cloud Elastic Compute Service ! \n' > /etc/motd" \
+              --run-command 'rc-update add chronyd default || true' \
+              --run-command 'rc-update add cloud-init default || true' \
+              --run-command 'rc-update add cloud-config default || true' \
+              --run-command 'rc-update add cloud-final default || true' \
+              --run-command 'rc-update add cloud-init-local default || true' \
               --run-command 'passwd -l root' \
               --run-command 'apk cache clean' \
               --delete '/var/log/*.log' \
@@ -123,9 +125,9 @@ jobs:
       - run:
           name: 压缩镜像
           command: |
-            echo "正在压缩镜像..."
+            set -euxo pipefail
             virt-sparsify --compress alpine-base.qcow2 alpine-custom.qcow2
-            echo "压缩完成，生成 alpine-custom.qcow2"
+            ls -lh alpine-custom.qcow2
 
       - persist_to_workspace:
           root: .
@@ -133,77 +135,55 @@ jobs:
             - alpine-custom.qcow2
 
   upload-to-release:
-    # 声明此 Job 将接收的参数
     parameters:
-      alpine_version_full: { type: string } # 只需要这个参数用于 Release Notes
+      alpine_version_full:
+        type: string
 
     machine:
       image: ubuntu-2204:current
+
     steps:
       - checkout
       - attach_workspace:
           at: .
 
       - run:
-          name: 安装最新版 GitHub CLI
+          name: 安装 GitHub CLI
           command: |
-            type -p curl >/dev/null || sudo apt-get install curl -y
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && sudo apt-get update && sudo apt-get install gh -y
+            set -euxo pipefail
+            type -p curl >/dev/null || sudo apt-get install -y curl
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt-get update
+            sudo apt-get install -y gh
 
       - run:
           name: 上传到 GitHub Release
           command: |
-            export GITHUB_TOKEN=$GH_TOKEN
+            set -euxo pipefail
+            export GITHUB_TOKEN="${GH_TOKEN:?GH_TOKEN 未设置}"
+
             TAG_NAME="${CIRCLE_TAG:-manual-$(date +%s)}"
-            echo "正在上传到 Release: $TAG_NAME"
+            echo "准备发布 Tag: $TAG_NAME"
 
-            ls -lh alpine-custom.qcow2 || (echo "错误：alpine-custom.qcow2 镜像文件不存在！" && exit 1)
+            ls -lh alpine-custom.qcow2
 
-            if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
-              echo "Release '$TAG_NAME' 不存在，正在创建..."
-              # 使用传递进来的参数
+            if ! gh release view "$TAG_NAME" >/dev/null 2>&1; then
               gh release create "$TAG_NAME" \
                 --title "Custom Alpine Linux Cloud Image $TAG_NAME" \
                 --notes "自动发布的 Alpine Linux 阿里云优化镜像，基于 Alpine << parameters.alpine_version_full >>"
-            else
-              echo "Release '$TAG_NAME' 已存在。"
             fi
 
-            echo "正在上传 alpine-custom.qcow2 到 Release '$TAG_NAME'..."
             gh release upload "$TAG_NAME" alpine-custom.qcow2 --clobber
-            echo "上传到 Release '$TAG_NAME' 完成。"
-            
-            if ! gh release view latest > /dev/null 2>&1; then
-              echo "Creating 'latest' release..."
-              # 使用传递进来的参数
-              gh release create latest \
-                --title "Latest Alpine Linux Cloud Image" \
-                --notes "这是最新自动构建的 Alpine 镜像，基于 Alpine << parameters.alpine_version_full >>"
-            else
-              echo "Release 'latest' 已存在。"
-            fi
-            echo "Uploading to 'latest' release..."
-            gh release upload latest alpine-custom.qcow2 --clobber
-            echo "上传到 'latest' Release 完成。"
 
-# 定义工作流 (Workflow)
+            # 将当前 tag 标记为 latest（替代创建名为 latest 的 tag）
+            gh release edit "$TAG_NAME" --latest
+
 workflows:
   build_and_release:
-    # 在 Workflow 层面定义参数及其默认值
-    parameters:
-      alpine_version_major:
-        type: string
-        default: "v3.23"
-      alpine_version_full:
-        type: string
-        default: "3.23.3"
-      alpine_release_rev:
-        type: string
-        default: "r0"
-
     jobs:
       - build-alpine-cloud:
-          # 将 Workflow 参数传递给 Job
           alpine_version_major: << pipeline.parameters.alpine_version_major >>
           alpine_version_full: << pipeline.parameters.alpine_version_full >>
           alpine_release_rev: << pipeline.parameters.alpine_release_rev >>
@@ -216,7 +196,6 @@ workflows:
       - upload-to-release:
           requires:
             - build-alpine-cloud
-          # 将 Workflow 参数传递给 Job (upload-to-release 只需要 alpine_version_full)
           alpine_version_full: << pipeline.parameters.alpine_version_full >>
           filters:
             tags:
