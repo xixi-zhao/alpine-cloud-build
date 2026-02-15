@@ -31,7 +31,7 @@ jobs:
               --run-command 'apk update && apk upgrade' \
               \
               # 1. 配置 NTP (chrony) 使用阿里云服务器
-              --run-command 'cat <<EOF > /etc/chrony/chrony.conf
+              --run-command 'cat \<<EOF > /etc/chrony/chrony.conf
             pool ntp.aliyun.com iburst
             driftfile /var/lib/chrony/drift
             rtcsync
@@ -48,7 +48,7 @@ jobs:
               --run-command "sed -i 's/\\(APPEND .*\\)/\\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf" \
               \
               # 4. 配置 sysctl.conf
-              --run-command 'cat <<EOF >> /etc/sysctl.d/99-aliyun-optimize.conf
+              --run-command 'cat \<<EOF >> /etc/sysctl.d/99-aliyun-optimize.conf
             vm.swappiness = 0
             kernel.sysrq = 1
             net.ipv4.neigh.default.gc_stale_time = 120
