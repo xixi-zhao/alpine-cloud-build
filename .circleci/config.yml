@@ -82,7 +82,6 @@ jobs:
               --smp 2 \
               --timezone Asia/Hong_Kong \
               --install chrony,cloud-init,cloud-utils-growpart \
-              --run-command 'apk update && apk upgrade --available' \
               --run-command "mkdir -p /etc/cloud/cloud.cfg.d && printf '%s\n' \
                 'growpart:' \
                 '  mode: auto' \
