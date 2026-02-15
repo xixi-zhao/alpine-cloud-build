@@ -3,7 +3,7 @@ version: 2.1
 jobs:
   build-alpine-cloud:
     machine:
-      image: ubuntu-2204:current # 使用一个明确的、较新的 Ubuntu 镜像
+      image: ubuntu-2204:current
     steps:
       - checkout
 
@@ -14,22 +14,55 @@ jobs:
             sudo apt-get install -y libguestfs-tools axel qemu-utils
 
       - run:
-          name: 下载 Alpine Cloud Image
+          name: 下载 Alpine Cloud Image (硬编码指定版本)
           command: |
-            # 注意：暂时硬编码一个版本
-            axel -n 8 -o alpine-base.qcow2 https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/generic_alpine-3.23.3-x86_64-uefi-cloudinit-r0.qcow2
+            DOWNLOAD_URL="https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/generic_alpine-3.23.3-x86_64-uefi-cloudinit-r0.qcow2"
+            echo "正在下载指定的 Alpine Cloud Image: $DOWNLOAD_URL"
+            axel -n 8 -o alpine-base.qcow2 "$DOWNLOAD_URL"
+
+      - run:
+          name: 验证下载的镜像文件类型
+          command: |
+            echo "--- 'file' 命令输出 ---"
+            file alpine-base.qcow2
+            echo "--- 'qemu-img info' 命令输出 ---"
+            # 检查文件是否存在
+            if [ ! -f alpine-base.qcow2 ]; then
+              echo "错误：alpine-base.qcow2 文件不存在！下载可能失败。"
+              exit 1
+            fi
+            # 检查文件大小，QCOW2通常不是0字节
+            if [ ! -s alpine-base.qcow2 ]; then
+              echo "错误：alpine-base.qcow2 文件为空或大小为0！下载可能失败或下载到错误内容。"
+              exit 1
+            fi
+            
+            # 使用 qemu-img 验证文件是否为有效的 QCOW2
+            qemu-img info alpine-base.qcow2 > qemu-img-info.txt 2>&1
+            if grep -q "qcow2" qemu-img-info.txt && grep -q "virtual size" qemu-img-info.txt; then
+              echo "文件类型验证通过：这是一个有效的 QCOW2 镜像。"
+              cat qemu-img-info.txt
+            else
+              echo "错误：qemu-img 无法识别该文件为有效的 QCOW2 镜像或文件已损坏！"
+              echo "请检查下载的文件内容是否为 QCOW2。可能下载到了HTML页面或不完整文件。"
+              cat qemu-img-info.txt # 输出qemu-img的错误信息
+              exit 1
+            fi
+
       - run:
           name: 定制 Alpine 镜像以兼容阿里云
           command: |
-            # 使用 virt-customize 对镜像进行修改
-            # -a 指定要修改的镜像文件
+            # 开启 libguestfs 调试模式，以获取更详细的错误信息
+            export LIBGUESTFS_DEBUG=1 LIBGUESTFS_TRACE=1
+            
+            # 之前 virt-customize 命令中 heredoc 的 << 也需要转义为 \<<
             virt-customize -a alpine-base.qcow2 \
               --smp 2 \
               --timezone Asia/Hong_Kong \
               --install chrony,cloud-utils-growpart \
               --run-command 'apk update && apk upgrade' \
               \
-              # 1. 配置 NTP (chrony) 使用阿里云服务器
+              # 1. 配置 NTP (chrony) 使用阿里云服务器 (注意 \<<EOF)
               --run-command 'cat \<<EOF > /etc/chrony/chrony.conf
             pool ntp.aliyun.com iburst
             driftfile /var/lib/chrony/drift
@@ -46,7 +79,7 @@ jobs:
               # 3. 配置内核启动参数 (extlinux)
               --run-command "sed -i 's/\\(APPEND .*\\)/\\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf" \
               \
-              # 4. 配置 sysctl.conf
+              # 4. 配置 sysctl.conf (注意 \<<EOF)
               --run-command 'cat \<<EOF >> /etc/sysctl.d/99-aliyun-optimize.conf
             vm.swappiness = 0
             kernel.sysrq = 1
@@ -66,7 +99,7 @@ jobs:
               # 5. 设置 MOTD (每日消息)
               --run-command 'echo -e "\nWelcome to Alibaba Cloud Elastic Compute Service ! \n" > /etc/motd' \
               \
-              # 6. 启用关键服务
+              # 6. 启用关键服务 (Alpine 使用 openrc，所以是 rc-update)
               --run-command 'rc-update add chronyd default' \
               --run-command 'rc-update add cloud-init default' \
               \
