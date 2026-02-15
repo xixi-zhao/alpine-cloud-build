@@ -133,7 +133,18 @@ jobs:
 
             qemu-img info alpine-custom.qcow2
             ls -lh alpine-custom.qcow2
-
+      - run:
+          name: 准备工作区产物
+          command: |
+            set -euxo pipefail
+            ls -lh alpine-custom.qcow2
+            mkdir -p /tmp/workspace
+            cp -f alpine-custom.qcow2 /tmp/workspace/alpine-custom.qcow2
+            ls -lh /tmp/workspace
+      - persist_to_workspace:
+          root: /tmp/workspace
+          paths:
+            - alpine-custom.qcow2
 
   upload-to-release:
     parameters:
@@ -146,7 +157,7 @@ jobs:
     steps:
       - checkout
       - attach_workspace:
-          at: .
+          at: /tmp/workspace
 
       - run:
           name: 安装 GitHub CLI
@@ -168,7 +179,7 @@ jobs:
             TAG_NAME="${CIRCLE_TAG:-manual-$(date +%s)}"
             echo "准备发布 Tag: $TAG_NAME"
 
-            ls -lh alpine-custom.qcow2
+            ls -lh /tmp/workspace/alpine-custom.qcow2
 
             if ! gh release view "$TAG_NAME" >/dev/null 2>&1; then
               gh release create "$TAG_NAME" \
@@ -176,7 +187,7 @@ jobs:
                 --notes "自动发布的 Alpine Linux 阿里云优化镜像，基于 Alpine << parameters.alpine_version_full >>"
             fi
 
-            gh release upload "$TAG_NAME" alpine-custom.qcow2 --clobber
+            gh release upload "$TAG_NAME" /tmp/workspace/alpine-custom.qcow2 --clobber
 
             # 将当前 tag 标记为 latest（替代创建名为 latest 的 tag）
             gh release edit "$TAG_NAME" --latest
