@@ -93,7 +93,7 @@ jobs:
             sudo virt-customize -a alpine-base.qcow2 \
               --smp 2 \
               --timezone Asia/Hong_Kong \
-              --install chrony,cloud-init,cloud-utils-growpart \
+              --install sudo,chrony,cloud-init,cloud-utils-growpart \
               --run-command "mkdir -p /etc/cloud/cloud.cfg.d && printf '%s\n' \
                 'growpart:' \
                 '  mode: auto' \
