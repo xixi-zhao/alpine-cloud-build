@@ -4,39 +4,31 @@ version: 2.1
 # 定义 Job
 jobs:
   build-alpine-cloud:
-    # 定义 Alpine Linux 的版本，方便统一管理和未来升级
+    # 声明此 Job 将接收的参数
     parameters:
-      alpine_version_major:
-        type: string
-        default: "v3.23"
-      alpine_version_full:
-        type: string
-        default: "3.23.3"
-      alpine_release_rev:
-        type: string
-        default: "r0" # 针对 Alpine 镜像的特定修订版
+      alpine_version_major: { type: string }
+      alpine_version_full: { type: string }
+      alpine_release_rev: { type: string }
 
     machine:
-      image: ubuntu-2204:current # 使用最新的 Ubuntu LTS 版本作为构建环境
+      image: ubuntu-2204:current
       resource_class: large # 建议使用更大的资源类，因为镜像构建可能需要更多内存和CPU
 
     steps:
-      - checkout # 拉取 GitHub 仓库代码
+      - checkout
 
       - run:
           name: 安装构建工具
           command: |
             sudo apt-get update
-            # 安装 libguestfs-tools (包含 virt-customize, virt-sparsify), axel (多线程下载器), qemu-utils (包含 qemu-img)
             sudo apt-get install -y libguestfs-tools axel qemu-utils
 
       - run:
           name: 下载 Alpine Cloud Image
           command: |
-            # 使用参数构建下载 URL
+            # 使用传递进来的参数构建下载 URL
             DOWNLOAD_URL="https://dl-cdn.alpinelinux.org/alpine/<< parameters.alpine_version_major >>/releases/cloud/generic_alpine-<< parameters.alpine_version_full >>-x86_64-uefi-cloudinit-<< parameters.alpine_release_rev >>.qcow2"
             echo "正在下载指定的 Alpine Cloud Image: $DOWNLOAD_URL"
-            # 使用 axel 进行多线程下载，更快
             axel -n 8 -o alpine-base.qcow2 "$DOWNLOAD_URL"
 
       - run:
@@ -45,18 +37,15 @@ jobs:
             echo "--- 'file' 命令输出 ---"
             file alpine-base.qcow2
             echo "--- 'qemu-img info' 命令输出 ---"
-            # 检查文件是否存在
             if [ ! -f alpine-base.qcow2 ]; then
               echo "错误：alpine-base.qcow2 文件不存在！下载可能失败。"
               exit 1
             fi
-            # 检查文件大小，QCOW2 通常不是0字节
             if [ ! -s alpine-base.qcow2 ]; then
               echo "错误：alpine-base.qcow2 文件为空或大小为0！下载可能失败或下载到错误内容。"
               exit 1
             fi
             
-            # 使用 qemu-img 验证文件是否为有效的 QCOW2
             qemu-img info alpine-base.qcow2 > qemu-img-info.txt 2>&1
             if grep -q "qcow2" qemu-img-info.txt && grep -q "virtual size" qemu-img-info.txt; then
               echo "文件类型验证通过：这是一个有效的 QCOW2 镜像。"
@@ -64,7 +53,7 @@ jobs:
             else
               echo "错误：qemu-img 无法识别该文件为有效的 QCOW2 镜像或文件已损坏！"
               echo "请检查下载的文件内容是否为 QCOW2。可能下载到了HTML页面或不完整文件。"
-              cat qemu-img-info.txt # 输出qemu-img的错误信息
+              cat qemu-img-info.txt
               exit 1
             fi
 
@@ -78,7 +67,6 @@ jobs:
       - run:
           name: 定制 Alpine 镜像以兼容阿里云
           command: |
-            # 开启 libguestfs 调试模式，以获取更详细的错误信息 (生产环境可以移除或设置为0)
             export LIBGUESTFS_DEBUG=1 LIBGUESTFS_TRACE=1
             
             sudo virt-customize -a alpine-base.qcow2 \
@@ -88,7 +76,6 @@ jobs:
               --install chrony,cloud-utils-growpart \
               --run-command 'apk update && apk upgrade --available' \
               \
-              # 1. 配置 NTP (chrony) 使用阿里云服务器
               --run-command 'cat \<<EOF > /etc/chrony/chrony.conf
             pool ntp.aliyun.com iburst
             driftfile /var/lib/chrony/drift
@@ -97,15 +84,12 @@ jobs:
             logdir /var/log/chrony
             EOF' \
               \
-              # 2. 配置 SSHD，禁止密码登录，仅允许密钥
               --run-command "sed -i 's/#*PermitRootLogin.*/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config" \
               --run-command "sed -i 's/#*PasswordAuthentication.*/PasswordAuthentication no/g' /etc/ssh/sshd_config" \
               --append-line '/etc/ssh/sshd_config:UseDNS no' \
               \
-              # 3. 配置内核启动参数 (extlinux)，确保控制台输出和网络接口名称固定
               --run-command "sed -i 's/\\(APPEND .*\\)/\\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf" \
               \
-              # 4. 配置 sysctl.conf 进行系统优化
               --run-command 'cat \<<EOF >> /etc/sysctl.d/99-aliyun-optimize.conf
             vm.swappiness = 0
             kernel.sysrq = 1
@@ -122,67 +106,62 @@ jobs:
             net.ipv4.tcp_slow_start_after_idle = 0
             EOF' \
               \
-              # 5. 设置 MOTD (每日消息)
               --run-command 'echo -e "\nWelcome to Alibaba Cloud Elastic Compute Service ! \n" > /etc/motd' \
               \
-              # 6. 启用关键服务 (Alpine 使用 openrc，所以是 rc-update)
               --run-command 'rc-update add chronyd default' \
               --run-command 'rc-update add cloud-init default' \
-              # 确保 cloud-init 的 growpart 服务在启动时运行，用于首次启动自动扩容文件系统
-              --run-command 'rc-update add cloud-config default'
-              --run-command 'rc-update add cloud-final default'
-              --run-command 'rc-update add cloud-init-local default'
+              --run-command 'rc-update add cloud-config default' \
+              --run-command 'rc-update add cloud-final default' \
+              --run-command 'rc-update add cloud-init-local default' \
               \
-              # 7. 安全和清理
-              --run-command 'passwd -l root' # 锁定 root 密码，强制使用 SSH 密钥登录
+              --run-command 'passwd -l root' \
               --run-command 'apk cache clean' \
               --delete '/var/log/*.log' \
               --delete '/var/cache/apk/*' \
-              --truncate '/etc/machine-id' # 清空 machine-id，确保每个实例有唯一的 ID
+              --truncate '/etc/machine-id'
 
       - run:
           name: 压缩镜像
           command: |
-            # 使用 virt-sparsify 移除镜像中的空白空间并压缩，减小文件大小
             echo "正在压缩镜像..."
             virt-sparsify --compress alpine-base.qcow2 alpine-custom.qcow2
             echo "压缩完成，生成 alpine-custom.qcow2"
 
-      - persist_to_workspace: # 将生成的镜像文件保存到工作区，以便后续 Job 可以访问
+      - persist_to_workspace:
           root: .
           paths:
             - alpine-custom.qcow2
 
   upload-to-release:
+    # 声明此 Job 将接收的参数
+    parameters:
+      alpine_version_full: { type: string } # 只需要这个参数用于 Release Notes
+
     machine:
       image: ubuntu-2204:current
     steps:
       - checkout
-      - attach_workspace: # 从工作区获取上一个 Job 生成的镜像文件
+      - attach_workspace:
           at: .
 
       - run:
           name: 安装最新版 GitHub CLI
           command: |
-            # 检查 curl 是否已安装，否则安装它
             type -p curl >/dev/null || sudo apt-get install curl -y
-            # 安装 GitHub CLI
             curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && sudo apt-get update && sudo apt-get install gh -y
 
       - run:
           name: 上传到 GitHub Release
           command: |
-            # GitHub token 必须作为 CircleCI 项目的环境变量 GH_TOKEN 设置
             export GITHUB_TOKEN=$GH_TOKEN
-            TAG_NAME="${CIRCLE_TAG:-manual-$(date +%s)}" # 使用触发器标签名，或在手动触发时使用时间戳
+            TAG_NAME="${CIRCLE_TAG:-manual-$(date +%s)}"
             echo "正在上传到 Release: $TAG_NAME"
 
-            # 检查镜像文件是否存在
             ls -lh alpine-custom.qcow2 || (echo "错误：alpine-custom.qcow2 镜像文件不存在！" && exit 1)
 
-            # 如果 Release 不存在，则创建它
             if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
               echo "Release '$TAG_NAME' 不存在，正在创建..."
+              # 使用传递进来的参数
               gh release create "$TAG_NAME" \
                 --title "Custom Alpine Linux Cloud Image $TAG_NAME" \
                 --notes "自动发布的 Alpine Linux 阿里云优化镜像，基于 Alpine << parameters.alpine_version_full >>"
@@ -190,15 +169,13 @@ jobs:
               echo "Release '$TAG_NAME' 已存在。"
             fi
 
-            # 上传镜像文件到指定 Release，使用 --clobber 选项允许覆盖同名文件
             echo "正在上传 alpine-custom.qcow2 到 Release '$TAG_NAME'..."
             gh release upload "$TAG_NAME" alpine-custom.qcow2 --clobber
             echo "上传到 Release '$TAG_NAME' 完成。"
             
-            # 尝试上传到 'latest' release，如果 'latest' 不存在，则创建一个
-            # 这是一个常见的模式，用于提供一个总是指向最新构建的下载链接
             if ! gh release view latest > /dev/null 2>&1; then
               echo "Creating 'latest' release..."
+              # 使用传递进来的参数
               gh release create latest \
                 --title "Latest Alpine Linux Cloud Image" \
                 --notes "这是最新自动构建的 Alpine 镜像，基于 Alpine << parameters.alpine_version_full >>"
@@ -209,26 +186,40 @@ jobs:
             gh release upload latest alpine-custom.qcow2 --clobber
             echo "上传到 'latest' Release 完成。"
 
-
 # 定义工作流 (Workflow)
 workflows:
   build_and_release:
+    # 在 Workflow 层面定义参数及其默认值
+    parameters:
+      alpine_version_major:
+        type: string
+        default: "v3.23"
+      alpine_version_full:
+        type: string
+        default: "3.23.3"
+      alpine_release_rev:
+        type: string
+        default: "r0"
+
     jobs:
       - build-alpine-cloud:
-          # 只在标签名匹配 /^v.*/ (例如 v1.0.0, v1.0.5) 时运行
+          # 将 Workflow 参数传递给 Job
+          alpine_version_major: << pipeline.parameters.alpine_version_major >>
+          alpine_version_full: << pipeline.parameters.alpine_version_full >>
+          alpine_release_rev: << pipeline.parameters.alpine_release_rev >>
           filters:
             tags:
               only: /^v.*/
             branches:
-              ignore: /.*/ # 忽略所有分支触发
+              ignore: /.*/
 
       - upload-to-release:
-          # 在 build-alpine-cloud 成功完成后运行
           requires:
             - build-alpine-cloud
-          # 同样只在标签名匹配 /^v.*/ 时运行
+          # 将 Workflow 参数传递给 Job (upload-to-release 只需要 alpine_version_full)
+          alpine_version_full: << pipeline.parameters.alpine_version_full >>
           filters:
             tags:
               only: /^v.*/
             branches:
-              ignore: /.*/ # 忽略所有分支触发
+              ignore: /.*/
