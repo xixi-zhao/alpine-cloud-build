@@ -54,7 +54,7 @@ jobs:
           command: |
             # 开启 libguestfs 调试模式，以获取更详细的错误信息
             export LIBGUESTFS_DEBUG=1 LIBGUESTFS_TRACE=1
-            virt-customize -a alpine-base.qcow2 \
+            sudo virt-customize -a alpine-base.qcow2 \
               --smp 2 \
               --timezone Asia/Hong_Kong \
               --install chrony,cloud-utils-growpart \
