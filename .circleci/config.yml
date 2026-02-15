@@ -80,7 +80,7 @@ jobs:
           name: 扩展 QCOW2 镜像文件容器
           command: |
             set -euxo pipefail
-            sudo qemu-img resize alpine-base.qcow2 8G
+            sudo qemu-img resize alpine-base.qcow2 1G
             qemu-img info alpine-base.qcow2
 
       - run:
