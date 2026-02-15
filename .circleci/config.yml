@@ -1,0 +1,149 @@
+version: 2.1
+
+jobs:
+  build-alpine-cloud:
+    machine:
+      image: ubuntu-2204:current # 使用一个明确的、较新的 Ubuntu 镜像
+    steps:
+      - checkout
+
+      - run:
+          name: 安装构建工具
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y libguestfs-tools axel qemu-utils
+
+      - run:
+          name: 下载 Alpine Cloud Image
+          command: |
+            # 注意：这里我们暂时硬编码一个版本，稍后在第 4 步中我们会让它自动获取最新版
+            axel -n 8 -o alpine-base.qcow2 https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-virt-3.20.0-x86_64.qcow2
+
+      - run:
+          name: 定制 Alpine 镜像以兼容阿里云
+          command: |
+            # 使用 virt-customize 对镜像进行修改
+            # -a 指定要修改的镜像文件
+            virt-customize -a alpine-base.qcow2 \
+              --smp 2 \
+              --timezone Asia/Hong_Kong \
+              --install chrony,cloud-utils-growpart \
+              --run-command 'apk update && apk upgrade' \
+              \
+              # 1. 配置 NTP (chrony) 使用阿里云服务器
+              --run-command 'cat <<EOF > /etc/chrony/chrony.conf
+            pool ntp.aliyun.com iburst
+            driftfile /var/lib/chrony/drift
+            rtcsync
+            makestep 1.0 3
+            logdir /var/log/chrony
+            EOF' \
+              \
+              # 2. 配置 SSHD，禁止密码登录，仅允许密钥
+              --run-command "sed -i 's/#*PermitRootLogin.*/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config" \
+              --run-command "sed -i 's/#*PasswordAuthentication.*/PasswordAuthentication no/g' /etc/ssh/sshd_config" \
+              --append-line '/etc/ssh/sshd_config:UseDNS no' \
+              \
+              # 3. 配置内核启动参数 (extlinux)
+              --run-command "sed -i 's/\\(APPEND .*\\)/\\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf" \
+              \
+              # 4. 配置 sysctl.conf
+              --run-command 'cat <<EOF >> /etc/sysctl.d/99-aliyun-optimize.conf
+            vm.swappiness = 0
+            kernel.sysrq = 1
+            net.ipv4.neigh.default.gc_stale_time = 120
+            net.ipv4.conf.all.rp_filter = 0
+            net.ipv4.conf.default.rp_filter = 0
+            net.ipv4.conf.default.arp_announce = 2
+            net.ipv4.conf.lo.arp_announce = 2
+            net.ipv4.conf.all.arp_announce = 2
+            net.ipv4.tcp_max_tw_buckets = 5000
+            net.ipv4.tcp_syncookies = 1
+            net.ipv4.tcp_max_syn_backlog = 1024
+            net.ipv4.tcp_synack_retries = 2
+            net.ipv4.tcp_slow_start_after_idle = 0
+            EOF' \
+              \
+              # 5. 设置 MOTD (每日消息)
+              --run-command 'echo -e "\nWelcome to Alibaba Cloud Elastic Compute Service ! \n" > /etc/motd' \
+              \
+              # 6. 启用关键服务
+              --run-command 'rc-update add chronyd default' \
+              --run-command 'rc-update add cloud-init default' \
+              \
+              # 7. 安全和清理
+              --run-command 'passwd -l root' \
+              --run-command 'apk cache clean' \
+              --delete '/var/log/*.log' \
+              --delete '/var/cache/apk/*' \
+              --truncate '/etc/machine-id'
+
+      - run:
+          name: 压缩镜像
+          command: |
+            virt-sparsify --compress alpine-base.qcow2 alpine-custom.qcow2
+
+      - persist_to_workspace:
+          root: .
+          paths:
+            - alpine-custom.qcow2
+
+  upload-to-release:
+    machine:
+      image: ubuntu-2204:current
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+
+      - run:
+          name: 安装最新版 GitHub CLI
+          command: |
+            type -p curl >/dev/null || sudo apt-get install curl -y
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && sudo apt-get update && sudo apt-get install gh -y
+
+      - run:
+          name: 上传到 GitHub Release
+          command: |
+            export GITHUB_TOKEN=$GH_TOKEN
+            TAG_NAME="${CIRCLE_TAG:-manual-$(date +%s)}"
+            echo "上传到 Release: $TAG_NAME"
+
+            ls -lh alpine-custom.qcow2 || (echo "镜像文件不存在" && exit 1)
+
+            if ! gh release view "$TAG_NAME" > /dev/null 2>&1; then
+              gh release create "$TAG_NAME" \
+                --title "Custom Alpine Linux Cloud Image $TAG_NAME" \
+                --notes "自动发布的 Alpine Linux 阿里云优化镜像"
+            fi
+
+            gh release upload "$TAG_NAME" alpine-custom.qcow2 --clobber
+            
+            # 尝试上传到 'latest' release，如果 'latest' 不存在，则创建一个
+            if ! gh release view latest > /dev/null 2>&1; then
+              echo "Creating 'latest' release..."
+              gh release create latest \
+                --title "Latest Alpine Linux Cloud Image" \
+                --notes "这是最新自动构建的 Alpine 镜像"
+            fi
+            echo "Uploading to 'latest' release..."
+            gh release upload latest alpine-custom.qcow2 --clobber
+
+
+workflows:
+  build_and_release:
+    jobs:
+      - build-alpine-cloud:
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - upload-to-release:
+          requires:
+            - build-alpine-cloud
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
