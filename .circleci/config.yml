@@ -16,9 +16,8 @@ jobs:
       - run:
           name: 下载 Alpine Cloud Image
           command: |
-            # 注意：这里我们暂时硬编码一个版本，稍后在第 4 步中我们会让它自动获取最新版
-            axel -n 8 -o alpine-base.qcow2 https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-virt-3.20.0-x86_64.qcow2
-
+            # 注意：暂时硬编码一个版本
+            axel -n 8 -o alpine-base.qcow2 https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/generic_alpine-3.23.3-x86_64-uefi-cloudinit-r0.qcow2
       - run:
           name: 定制 Alpine 镜像以兼容阿里云
           command: |
