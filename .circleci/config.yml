@@ -99,7 +99,7 @@ jobs:
               --run-command "sed -i 's/#*PermitRootLogin.*/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config" \
               --run-command "sed -i 's/#*PasswordAuthentication.*/PasswordAuthentication no/g' /etc/ssh/sshd_config" \
               --append-line '/etc/ssh/sshd_config:UseDNS no' \
-              --run-command "sed -i 's/\(APPEND .*\)/\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf" \
+              --run-command "if [ -f /boot/extlinux.conf ]; then sed -i 's/\(APPEND .*\)/\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf; else echo 'skip: /boot/extlinux.conf not found'; fi" \
               --run-command 'rc-update add chronyd default || true' \
               --run-command 'rc-update add cloud-init default || true' \
               --run-command 'rc-update add cloud-config default || true' \
