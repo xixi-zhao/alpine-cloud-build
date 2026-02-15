@@ -81,9 +81,15 @@ jobs:
             sudo virt-customize -a alpine-base.qcow2 \
               --smp 2 \
               --timezone Asia/Hong_Kong \
-              --resize /dev/sda1:8G \
-              --install chrony,cloud-utils-growpart \
+              --install chrony,cloud-init,cloud-utils-growpart \
               --run-command 'apk update && apk upgrade --available' \
+              --run-command "mkdir -p /etc/cloud/cloud.cfg.d && printf '%s\n' \
+                'growpart:' \
+                '  mode: auto' \
+                '  devices: [\"/\"]' \
+                '  ignore_growroot_disabled: false' \
+                'resize_rootfs: true' \
+                > /etc/cloud/cloud.cfg.d/99-growpart.cfg" \
               --run-command "printf '%s\n' \
                 'pool ntp.aliyun.com iburst' \
                 'driftfile /var/lib/chrony/drift' \
@@ -94,23 +100,7 @@ jobs:
               --run-command "sed -i 's/#*PermitRootLogin.*/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config" \
               --run-command "sed -i 's/#*PasswordAuthentication.*/PasswordAuthentication no/g' /etc/ssh/sshd_config" \
               --append-line '/etc/ssh/sshd_config:UseDNS no' \
-              --run-command "sed -i 's/\\(APPEND .*\\)/\\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf" \
-              --run-command "printf '%s\n' \
-                'vm.swappiness = 0' \
-                'kernel.sysrq = 1' \
-                'net.ipv4.neigh.default.gc_stale_time = 120' \
-                'net.ipv4.conf.all.rp_filter = 0' \
-                'net.ipv4.conf.default.rp_filter = 0' \
-                'net.ipv4.conf.default.arp_announce = 2' \
-                'net.ipv4.conf.lo.arp_announce = 2' \
-                'net.ipv4.conf.all.arp_announce = 2' \
-                'net.ipv4.tcp_max_tw_buckets = 5000' \
-                'net.ipv4.tcp_syncookies = 1' \
-                'net.ipv4.tcp_max_syn_backlog = 1024' \
-                'net.ipv4.tcp_synack_retries = 2' \
-                'net.ipv4.tcp_slow_start_after_idle = 0' \
-                > /etc/sysctl.d/99-aliyun-optimize.conf" \
-              --run-command "printf '\nWelcome to Alibaba Cloud Elastic Compute Service ! \n' > /etc/motd" \
+              --run-command "sed -i 's/\(APPEND .*\)/\1 net.ifnames=0 console=tty0 console=ttyS0,115200n8/' /boot/extlinux.conf" \
               --run-command 'rc-update add chronyd default || true' \
               --run-command 'rc-update add cloud-init default || true' \
               --run-command 'rc-update add cloud-config default || true' \
@@ -121,6 +111,10 @@ jobs:
               --delete '/var/log/*.log' \
               --delete '/var/cache/apk/*' \
               --truncate '/etc/machine-id'
+
+
+            
+            
 
       - run:
           name: 压缩镜像
