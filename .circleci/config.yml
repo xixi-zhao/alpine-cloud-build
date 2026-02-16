@@ -118,6 +118,8 @@ jobs:
               --run-command 'rc-update add cloud-final default || true' \
               --run-command 'rc-update add cloud-init-local default || true' \
               --run-command 'apk cache clean' \
+              --run-command "cp -f /etc/apk/repositories /etc/apk/repositories.bak" \
+              --run-command "sed -Ei 's#https?://dl-cdn\.alpinelinux\.org/alpine#https://mirrors.aliyun.com/alpine#g' /etc/apk/repositories && echo '--- /etc/apk/repositories ---' && cat /etc/apk/repositories" \
               --delete '/var/log/*.log' \
               --delete '/var/cache/apk/*' \
               --run-command 'mkdir -p /etc && : > /etc/machine-id'
